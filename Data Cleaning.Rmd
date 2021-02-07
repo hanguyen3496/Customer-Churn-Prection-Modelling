@@ -1,0 +1,153 @@
+
+```{r}
+#Load data and package
+getwd
+setwd("C:/Users/Ha Nguyen/Desktop/Study Courses/Quarter 4/The Analytics Edge/Group Assignment/Data Imputation/")
+terizon.test <- read.csv2("terizon_test.csv")
+terizon.train <- read.csv2("terizon_train.csv")
+summary(terizon.train)
+#Combine test set and train set for transformation and imputation
+
+#total.data <- rbind(terizon.test,terizon.train)
+```
+
+Check missing values
+
+```{r}
+#Check vars with missing values
+
+contains.missng <- terizon.train %>%
+  filter_all(any_vars(is.na(.))) %>%
+  select_if(function(x) any(is.na(x)))
+
+view(contains.missng)
+
+```
+
+
+1.1. Missing Values Pattern
+
+```{r}
+aggr_plot <- aggr(contains.missng, numbers=TRUE, sortVars=TRUE, labels=names(contains.missng), cex.axis=.4, gap=.1, ylab=c("Histogram of missing data",""))
+
+md.pattern(contains.missng, rotate.names = TRUE)
+
+```
+1.2.Data Imputation
+
+```{r}
+
+
+terizon.train <- terizon.train %>%
+  mutate(Current_Equipment_Days=ifelse(Current_Equipment_Days<0,NA,Current_Equipment_Days),
+         Service_Area=ifelse(is.na(Service_Area),"Unknown",as.character(Service_Area)))
+
+#Systematic misisng of numeric values that record customer usage (Monthly Revenue, Monthly Charg, Overage,..)
+
+
+terizon.train <- terizon.train %>%
+  filter(!is.na(Monthly_Revenue))
+
+#Mutate invalid value of Customer_Care_Calls with Director_Assisted_Calls
+
+invalid.data.1 <- terizon.train %>%
+  filter(!Director_Assisted_Calls==0 & Customer_Care_Calls==0) 
+
+terizon.train <- terizon.train %>%
+  mutate(Customer_Care_Calls=ifelse(!Director_Assisted_Calls==0 & Customer_Care_Calls==0,Director_Assisted_Calls,Customer_Care_Calls))
+
+#Exclude all remaining missing values that are invalid
+invalid.data <- terizon.train %>%
+  filter(Inbound_Calls==0 & Outbound_Calls==0 & Threeway_Calls==0 & Customer_Care_Calls==0 & Roaming_Calls==0 & !Monthly_Minutes==0)
+
+
+terizon.train <- terizon.train %>%
+  filter(!(Inbound_Calls==0 & Outbound_Calls==0 & Threeway_Calls==0 & Customer_Care_Calls==0 & Roaming_Calls==0 & !Monthly_Minutes==0))
+
+#Mutate Monthly_Rec_Chagre =0 is removed due to illogical (29 obs)
+
+terizon.train <- terizon.train %>%
+  filter(!Monthly_Rec_Charge==0)
+
+#Mutate Current_Equipment_Days = Contract_time
+
+terizon.train <- terizon.train %>%
+  mutate(Current_Equipment_Days=ifelse(is.na(Current_Equipment_Days),Contract_Time*30,Current_Equipment_Days))
+
+#Mutate Retention_Offers_Accepted = Retention_Calls
+
+terizon.train <- terizon.train %>%
+  mutate(Retention_Offers_Accepted=ifelse(is.na(Retention_Offers_Accepted),Retention_Calls,Retention_Offers_Accepted))
+
+#Mobiles Phone, Phone_Web_Acess and Credit_Card by MEdian and Mode imputation
+
+data.imputed <- recipe(Churn ~., data=terizon.train) %>%
+  step_modeimpute(Phone_Web_Access, Credit_Card) %>%
+  step_medianimpute(Mobile_Phones)
+
+terizon.train <- data.imputed %>%
+  prep() %>%
+  bake(., terizon.train) 
+
+```
+
+
+1.3. Create new variables
+
+```{r}
+terizon.train <- terizon.train %>%
+  mutate(Perc_Overage=ifelse(Monthly_Minutes > 0, Overage_Minutes/Monthly_Minutes, 0),
+         Perc_Equipment=Current_Equipment_Days/(30*Contract_Time),
+         Actual_Charge_Minutes=ifelse(Monthly_Minutes > 0,Monthly_Revenue/Monthly_Minutes,0),
+         Perc_Change_Price_before_Churn=ifelse(Perc_Change_Minutes>0,Perc_Change_Revenues/Perc_Change_Minutes,0))
+
+
+
+#Customer call classification
+terizon.train <- terizon.train %>%
+mutate(status=ifelse(Monthly_Minutes==0,"Inactive",
+                     ifelse( Inbound_Calls==0 & !Outbound_Calls==0,"Only Calling Out",
+                             ifelse(!Inbound_Calls==0 & Outbound_Calls==0,"Only Receiving",
+                                    ifelse(!Inbound_Calls==0 & !Outbound_Calls==0 & Inbound_Calls < Outbound_Calls,"Preferred Calling Out",
+                                           ifelse(!Inbound_Calls==0 & !Outbound_Calls==0 & Inbound_Calls > Outbound_Calls, "Preferred Receiving",
+                                                  ifelse(!Inbound_Calls==0 & !Outbound_Calls==0 & Inbound_Calls == Outbound_Calls,"Equal","No Out/Inbound Calls")))))))
+
+terizon.train <- terizon.train %>%
+mutate(status=as.factor(status))
+
+terizon.train <- terizon.train %>%
+  mutate(Per_Customer_Calls = ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                     Customer_Care_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0),
+         Per_Roaming_calls=ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                  Roaming_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0),
+         Per_Inbound_Calls=ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                  Inbound_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0),
+         Per_Outbound_Calls=ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                   Outbound_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0),
+         Per_Threeway_Calls=ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                   Threeway_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0))
+
+
+terizon.train <- terizon.train %>%
+  mutate(Per_Additional_Charge=(Monthly_Revenue-Monthly_Rec_Charge)/Monthly_Rec_Charge)
+
+#Mutate data format as factors
+
+terizon.train <- terizon.train %>%
+  mutate(Income_Group=as.factor(Income_Group),
+         Credit_Rating=as.factor(Credit_Rating))
+
+glimpse(terizon.train)
+
+
+#Group Age into x groups: Unknown, Young, Middle, Senior
+
+terizon.train <- terizon.train %>%
+  mutate(Age_Group=ifelse(Age_HH == 0,"Unknown",
+                          ifelse(Age_HH >= 18 & Age_HH <= 35,"Young",
+                                 ifelse(Age_HH > 35 & Age_HH <= 55,"Middle",
+                                        ifelse(Age_HH > 55,"Old","No"))))) %>%
+  mutate(Age_Group=as.factor(Age_Group))
+
+summary(terizon.train)
+```

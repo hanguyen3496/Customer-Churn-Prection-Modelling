@@ -1,0 +1,9 @@
+4. Model Comparisions:
+
+```{r}
+resamples <- resamples(list("Simple Logistic Regression" = simple.logistic.regression,
+"Decision Tree" = DTModel,
+"Random Forest" = random.forest,
+"Boosted Trees" = BoostedTrees))
+summary(resamples)
+```

@@ -1,0 +1,528 @@
+---
+title: "Group Assigment"
+output: html_document
+---
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(VIM)
+library(naniar)
+library(mice)
+library(recipes)
+require(caret)
+require(ggfortify)
+library(future)
+library(dplyr)
+library(tidyverse)
+library(recipes)
+require(caret)
+library(keras)
+require(ggfortify)
+#install.packages("keras")
+library(keras)
+library(future)
+library(lime)
+library(tidyquant)
+library(rsample)
+library(yardstick)
+library(corrr)
+library(ROSE)
+library(rpart.plot)
+library(pROC)
+library(MLmetrics)
+library(car)
+plan(multiprocess, workers = 3)
+
+```
+
+
+
+
+
+3. Model Prediction 
+
+3.1. Test set tranformation 
+
+```{r}
+#Eliminated unneccesary variables
+
+#Test set: create variables and factors as training set
+
+terizon.test <- terizon.test %>%
+  mutate(Perc_Overage=ifelse(Monthly_Minutes > 0, Overage_Minutes/Monthly_Minutes, 0),
+         Perc_Equipment=Current_Equipment_Days/(30*Contract_Time),
+         Actual_Charge_Minutes=ifelse(Monthly_Minutes > 0,Monthly_Revenue/Monthly_Minutes,0),
+         Perc_Change_Price_before_Churn=ifelse(Perc_Change_Minutes>0,Perc_Change_Revenues/Perc_Change_Minutes,0))
+
+
+#Customer call classification
+terizon.test <- terizon.test %>%
+mutate(status=ifelse(Monthly_Minutes==0,"Inactive",
+                     ifelse( Inbound_Calls==0 & !Outbound_Calls==0,"Only Calling Out",
+                             ifelse(!Inbound_Calls==0 & Outbound_Calls==0,"Only Receiving",
+                                    ifelse(!Inbound_Calls==0 & !Outbound_Calls==0 & Inbound_Calls < Outbound_Calls,"Preferred Calling Out",
+                                           ifelse(!Inbound_Calls==0 & !Outbound_Calls==0 & Inbound_Calls > Outbound_Calls, "Preferred Receiving",
+                                                  ifelse(!Inbound_Calls==0 & !Outbound_Calls==0 & Inbound_Calls == Outbound_Calls,"Equal","No Out/Inbound Calls")))))))
+
+
+terizon.test <- terizon.test %>%
+  mutate(Per_Customer_Calls = ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                     Customer_Care_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0),
+         Per_Roaming_calls=ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                  Roaming_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0),
+         Per_Inbound_Calls=ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                  Inbound_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0),
+         Per_Outbound_Calls=ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                   Outbound_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0),
+         Per_Threeway_Calls=ifelse(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls>0,
+                                   Threeway_Calls/(Customer_Care_Calls+Roaming_Calls+Inbound_Calls+Outbound_Calls+Threeway_Calls),0))
+
+
+terizon.test <- terizon.test %>%
+  mutate(Per_Additional_Charge=(Monthly_Revenue-Monthly_Rec_Charge)/Monthly_Rec_Charge)
+
+#Group Age into x groups: Unknown, Young, Middle, Senior
+
+terizon.test <- terizon.test %>%
+  mutate(Age_Group=ifelse(Age_HH == 0,"Unknown",
+                          ifelse(Age_HH >= 18 & Age_HH <= 35,"Young",
+                                 ifelse(Age_HH > 35 & Age_HH <= 55,"Middle",
+                                        ifelse(Age_HH > 55,"Old","No"))))) %>%
+  mutate(Age_Group=as.factor(Age_Group)) 
+
+terizon.train <- terizon.train %>% select(!c(Customer_ID,Service_Area,Age_HH))
+
+terizon.test <- terizon.test %>% select(!c(Customer_ID,Service_Area,Age_HH))
+
+#Transformation
+
+terizon.test <- terizon.test %>%
+  mutate(Churn=as.factor(Churn),
+         Children_in_Hh=as.factor(Children_in_Hh),
+         Phone_Web_Access=as.factor(Phone_Web_Access),
+         Owns_Home=as.factor(Owns_Home),
+         Responds_to_Mail_Offers=as.factor(Responds_to_Mail_Offers),
+         Opt_Out_Mailings=as.factor(Opt_Out_Mailings),
+         Credit_Card=as.factor(Credit_Card),
+         Income_Group=as.factor(Income_Group),
+         Calls_to_Retention_Team=as.factor(Calls_to_Retention_Team),
+         Credit_Rating=as.factor(Credit_Rating),
+         Prizm_Code=as.factor(Prizm_Code),
+         Occupation=as.factor(Occupation),
+         Married=as.factor(Married),
+         status=as.factor(status),
+         Age_Group=as.factor(Age_Group))
+
+terizon.train <- terizon.train %>%
+  mutate(sqrMin = Monthly_Minutes^2) %>%
+  mutate(sqrRev = Monthly_Revenue^2) %>%
+  mutate(sqrOvr = Overage_Minutes^2) %>%
+  mutate(sqrRec = Monthly_Rec_Charge^2) %>%
+  mutate(sqrMinChange = Perc_Change_Minutes^2)
+
+
+
+terizon.test <- terizon.test %>%
+ mutate(sqrMin = Monthly_Minutes^2) %>%
+  mutate(sqrRev = Monthly_Revenue^2) %>%
+  mutate(sqrOvr = Overage_Minutes^2) %>%
+  mutate(sqrRec = Monthly_Rec_Charge^2) %>%
+  mutate(sqrMinChange = Perc_Change_Minutes^2)
+
+glimpse(terizon.test)
+glimpse(terizon.train)
+
+
+write.csv(terizon.test,"C:/Users/Ha Nguyen/Desktop/Study Courses/Quarter 4/The Analytics Edge/Group Assignment/Data Imputation/MyData.Terizon.test.csv", row.names = FALSE)
+
+
+
+write.csv(terizon.train,"C:/Users/Ha Nguyen/Desktop/Study Courses/Quarter 4/The Analytics Edge/Group Assignment/Data Imputation/MyData.Terizon.train.csv", row.names = FALSE)
+
+
+
+```
+
+
+3.2. Model Development
+
+3.2.1 Logistics
+```{r}
+ ### Logistic
+
+##Pre-processing: both training and test set for logistic regression
+rec_obj <- recipe(Churn ~ ., data = terizon.train) %>%
+  step_YeoJohnson(all_numeric(), -all_outcomes()) %>%
+  prep(data = terizon.train)
+
+rec_obj
+
+terion.train.logistics <- bake(rec_obj, new_data = terizon.train)
+terion.test.logistics <- bake(rec_obj, new_data = terizon.test) 
+
+x_train <- bake(rec_obj, new_data = terizon.train) %>%
+select(!c(Churn))
+y_train <- ifelse(pull(terizon.train, Churn) == "Yes", 1, 0)
+x_test <- bake(rec_obj, new_data = terizon.test) %>% select(!c(Churn))
+y_test <- ifelse(pull(terizon.test, Churn) == "Yes", 1, 0)
+
+set.seed(2)
+train.control <- trainControl(method = "cv",
+                              number = 10,
+                              verboseIter = F,
+                              classProbs = T,
+                              savePredictions = T,
+                              summaryFunction = prSummary)
+set.seed(2)
+simple.logistic.regression <- train(Churn ~ . -Overage_Minutes,
+                                    data = terion.train.logistics,
+                                    method = "glm",
+                                    metric = "AUC",
+                                    trControl = train.control)
+simple.logistic.regression
+
+###Predict
+terion.train.logistics
+
+predict_glm <- predict(simple.logistic.regression,terion.train.logistics)
+
+Precision(predict_glm,terion.test.logistics$Churn)
+Recall(predict_glm,terion.test.logistics$Churn)
+F1_Score(predict_glm,terion.test.logistics$Churn)
+
+
+roc_glm <- roc(as.numeric(terion.test.logistics$Churn), as.numeric(predict_glm))
+auc_glm <- auc(roc_glm)
+auc_glm
+
+library(pROC)
+roc(as.numeric(terion.test.logistics$Churn), as.numeric(predict_glm), plot=TRUE,  grid=TRUE, print.auc=TRUE)
+
+#Important variables 
+
+important <- varImp(simple.logistic.regression)
+
+plot(important,top=20)
+
+summary(simple.logistic.regression)
+
+autoplot(simple.logistic.regression$finalModel, which = 1:4, ncol = 2, label.size = 3) +
+theme_minimal()
+```
+
+```{r}
+preds_list <- list(as.numeric(p1),as.numeric(predict_rf))
+
+# List of actual values (same for all)
+m <- length(preds_list)
+actuals_list <- rep(list(as.numeric(terion.train.logistics$Churn),as.numeric(terion.train.rf$Churn)), m)
+
+# Plot the ROC curves
+pred <- prediction(preds_list, actuals_list)
+rocs <- performance(pred, "tpr", "fpr")
+plot(rocs, col = as.list(1:m), main = "Test Set ROC Curves")
+legend(x = "bottomright", 
+       legend = c("Decision Tree", "Bagged Trees", "Random Forest", "GBM"),
+       fill = 1:m)
+```
+
+
+3.2.2.Decision Trees
+```{r}
+
+# fitting decision tree classification model
+
+##Pre-processing: both training and test set for Decision Trees
+rec_obj <- recipe(Churn ~ ., data = terizon.train) %>%
+  step_YeoJohnson(all_numeric(), -all_outcomes()) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_center(all_predictors(), -all_outcomes()) %>%
+  step_scale(all_predictors(), -all_outcomes()) %>%
+  prep(data = terizon.train)
+
+rec_obj
+
+terion.train.rf <-bake(rec_obj, new_data = terizon.train) 
+terion.test.rf <- bake(rec_obj, new_data = terizon.test) 
+
+train.control <- trainControl(method = "cv",
+                              number = 10,
+                              verboseIter = F,
+                              classProbs = T,
+                              savePredictions = T,
+                              summaryFunction = prSummary)
+set.seed(2)
+DTModel <- train(Churn ~ . -Overage_Minutes,
+                                    data = terion.train.logistics,
+                                    method = "rpart",
+                                    metric = "AUC",
+                                    trControl = train.control)
+# model summary
+DTModel
+
+dtm <- predict(DTModel,terion.test.logistics)
+Precision(dtm,terion.test.logistics$Churn)
+Recall(dtm,terion.test.logistics$Churn)
+F1_Score(dtm,terion.test.logistics$Churn)
+roc(as.numeric(terion.test.logistics$Churn), as.numeric(dtm), plot=TRUE,  grid=TRUE, print.auc=TRUE)
+
+
+# visualization
+library(rpart.plot)
+prp(DTModel$finalModel, box.palette = "Reds", tweak = 1.2, varlen = 20)
+```
+```{r}
+# plotting variable importance
+important.dt <- varImp(DTModel)
+plot(important.dt, top=20)
+
+predict_dt <- predict(DTModel, terion.test.logistics)
+roc_dt <- roc(as.numeric(terizon.test$Churn), as.numeric(predict_dt))
+auc_dt <- auc(roc_dt)
+auc_dt
+
+# predicting the model on test data set
+PredDTModel <- predict(DTModel, 
+                    newdata = terizon.test,type = "prob")
+```
+
+
+
+3.2.3. Boosted Trees
+```{r}
+
+##Pre-processing: both training and test set for Boosted Trees
+rec_obj <- recipe(Churn ~ ., data = terizon.train) %>%
+  step_YeoJohnson(all_numeric(), -all_outcomes()) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_center(all_predictors(), -all_outcomes()) %>%
+  step_scale(all_predictors(), -all_outcomes()) %>%
+  prep(data = terizon.train)
+
+rec_obj
+
+terion.train.rf <-bake(rec_obj, new_data = terizon.train) 
+terion.test.rf <- bake(rec_obj, new_data = terizon.test) 
+set.seed(42)
+train.control <- trainControl(method = "cv",
+                              number = 10,
+                              verboseIter = F,
+                              classProbs = T,
+                              savePredictions = T,
+                              summaryFunction = prSummary)
+set.seed(2)
+BoostedTrees <- train(Churn ~ . -Overage_Minutes,
+                                    data = terion.train.rf,
+                                    method = "xgbTree",
+                                    metric = "AUC",
+                                    trControl = train.control)
+# model summary
+BoostedTrees
+
+bt <- predict(BoostedTrees,terion.test.rf)
+Precision(bt,terion.test.rf$Churn)
+Recall(bt,terion.test.rf$Churn)
+F1_Score(bt,terion.test.rf$Churn)
+roc(as.numeric(terion.test.rf$Churn), as.numeric(bt), plot=TRUE,  grid=TRUE, print.auc=TRUE)
+
+# plotting variable importance
+important.bt <- varImp(BoostedTrees)
+plot(important.bt, top=20)
+
+predict_bt <- predict(BoostedTrees, terion.test.rf)
+roc_bt <- roc(as.numeric(terizon.test$Churn), as.numeric(predict_bt))
+auc_bt <- auc(roc_bt)
+auc_bt
+
+
+```
+
+3.2.4. Random Forest
+```{r}
+###Random forest
+##Pre-processing: both training and test set for Random Forest
+rec_obj <- recipe(Churn ~ ., data = terizon.train) %>%
+  step_YeoJohnson(all_numeric(), -all_outcomes()) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_center(all_predictors(), -all_outcomes()) %>%
+  step_scale(all_predictors(), -all_outcomes()) %>%
+  prep(data = terizon.train)
+
+rec_obj
+
+terion.train.rf <-bake(rec_obj, new_data = terizon.train) 
+terion.test.rf <- bake(rec_obj, new_data = terizon.test) 
+
+set.seed(42)
+train.control <- trainControl(method = "cv",
+                              number = 10,
+                              verboseIter = F,
+                              classProbs = T,
+                              search = "random",
+                              savePredictions = T,
+                              summaryFunction = prSummary)
+random.forest <- train(Churn ~ .,
+                       data = terion.train.rf,
+                       method = "ranger",
+                       metric = "AUC",
+                       trControl = train.control,
+                       tuneLength = 10,
+                       importance = 'impurity')
+random.forest
+plot(random.forest)
+
+
+###Predict
+predict_rf <- predict(random.forest, terion.test.rf)
+roc_rf <- roc(as.numeric(terizon.test$Churn), as.numeric(predict_rf))
+auc_rf <- auc(roc_rf)
+auc_rf
+
+
+Precision(predict_rf,terion.test.rf$Churn)
+Recall(predict_rf,terion.test.rf$Churn)
+F1_Score(predict_rf,terion.test.rf$Churn)
+
+library(pROC)
+roc(as.numeric(terion.test.rf$Churn), as.numeric(predict_rf), plot=TRUE,  grid=TRUE, print.auc=TRUE)
+
+#Important Variables
+
+important.rf <- varImp(random.forest)
+plot(important.rf)
+
+```
+
+3.2.5. Neural Network
+
+```{r}
+#Best Neural Network with optimized parameters
+ 
+##Pre-processing: both training and test set for NN
+rec_obj <- recipe(Churn ~ ., data = terizon.train) %>%
+  step_YeoJohnson(all_numeric(),-all_outcomes()) %>%
+  step_discretize(Monthly_Rec_Charge, options = list(cuts = 6)) %>%
+  step_discretize(Overage_Minutes, options = list(cuts = 4)) %>%
+  step_discretize(Contract_Time, options = list(cuts = 4)) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_center(all_predictors(), -all_outcomes()) %>%
+  step_scale(all_predictors(), -all_outcomes()) %>%
+  prep(data = terizon.train)
+
+rec_obj
+
+x_train <- bake(rec_obj, new_data = terizon.train) %>%
+select(!c(Churn))
+y_train <- ifelse(pull(terizon.train, Churn) == "Yes", 1, 0)
+x_test <- bake(rec_obj, new_data = terizon.test) %>% select(!c(Churn))
+y_test <- ifelse(pull(terizon.test, Churn) == "Yes", 1, 0)
+
+
+weight_for_0 = (1 / 6416)*(8977)/2.0 
+weight_for_1 = (1 / 2561)*(8977)/2.0
+ 
+# Building our Artificial Neural Network
+model_keras <- keras_model_sequential()
+ 
+model_keras %>% 
+  
+  # First layer
+  layer_dense(
+    units              = 32, 
+    kernel_initializer = "he_normal", 
+    activation         = "relu", 
+    input_shape        = ncol(x_train)) %>% 
+  
+  # Dropout to prevent overfitting
+  layer_dropout(rate = 0.6) %>%
+  
+  # hidden layer
+  layer_dense(
+    units              = 28, 
+    kernel_initializer = "uniform", 
+    activation         = "relu") %>% 
+  
+  # Dropout to prevent overfitting
+  layer_dropout(rate = 0.7) %>%
+  
+  # Output layer
+  layer_dense(
+    units              = 1, 
+    kernel_initializer = "GlorotUniform", 
+    activation         = "sigmoid",
+    bias_initializer=initializer_constant(2561/6416)
+    )%>% 
+ 
+  # Compile ANN
+  compile(
+    optimizer = 'Adam',
+    loss      = 'binary_crossentropy',
+    metrics   = c('AUC'),
+    class_weight = list("0"= weight_for_0,"1"= weight_for_1)
+  )
+ 
+model_keras
+ 
+#Fit the model
+history <- fit(
+  object           = model_keras, 
+  x                = as.matrix(x_train), 
+  y                = y_train,
+  batch_size       = 120,
+  epochs           = 40,
+  learning_rate    =1e-4,
+  rho              =0.2,
+  decay            =0.1,
+  validation_split = 0.2
+  )
+ 
+ 
+print(history)
+plot(history)
+
+
+```
+
+
+```{r}
+###Predict
+
+# Predicted Class
+yhat_keras_class_vec <- predict_classes(object = model_keras, x = as.matrix(x_test)) %>%
+  as.vector()
+
+# Predicted Class Probability
+yhat_keras_prob_vec  <- predict_proba(object = model_keras, x = as.matrix(x_test)) %>%
+  as.vector()
+
+###Inpection with yardstick
+estimates_keras_tbl <- tibble(
+  truth      = as.factor(y_test) %>% fct_recode(yes = "1", no = "0"),
+  estimate   = as.factor(yhat_keras_class_vec) %>% fct_recode(yes = "1", no = "0"),
+  class_prob = yhat_keras_prob_vec
+)
+
+estimates_keras_tbl
+options(yardstick.event_first = FALSE)
+
+# Confusion Table
+estimates_keras_tbl %>% conf_mat(truth, estimate)
+# Accuracy
+estimates_keras_tbl %>% metrics(truth, estimate)
+# AUC
+estimates_keras_tbl %>% roc_auc(truth, class_prob)
+# Precision
+ precision = estimates_keras_tbl %>% precision(truth, estimate)
+  recall    = estimates_keras_tbl %>% recall(truth, estimate)
+  
+  precision
+  recall
+
+# F1-Statistic
+estimates_keras_tbl %>% f_meas(truth, estimate, beta = 1)
+
+```
+
+
+
